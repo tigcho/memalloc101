@@ -1,7 +1,6 @@
 #include <unistd.h> // sbrk
 #include <string.h> // memset and memcpy
 #include <pthread.h>
-#include <stdio.h> 
 
 // memory alignment arranges data in memory at addresses that
 // are multiples of the data types size (2, 4, 8, 16, etc.)
@@ -76,31 +75,37 @@ void free(void *block) {
 	// On failure, sbrk() returns (void*) -1
 	programbreak = sbrk(0);
 
+	// block points to the start of the user data block
+	// header->s.size is the size of the user data block in bytes
+	// we need to move the pointer from the start to the end 
+	// and that is exactly header->s.size bytes away
+	// so if header->s.size is 16, then casting to char* allows
+	// the pointer to move forward by exactly 16 bytes
 	if ((char*)block + header->s.size == programbreak) {
+
+		// if the block is the only block in the linked list
+		// we can release the block and set head and tail to NULL
 		if (head == tail) {
 			head = tail = NULL;
 		} else {
+
+			// if its not the only block, then update the tail
+			// by traversing the linked list with a while loop
+			// and check if the current block is the one right 
+			// before the last block
 			tmp = head;
 			while (tmp) {
-				if(tmp->s.next == tail) {
+				if (tmp->s.next == tail) {
 					tmp->s.next = NULL;
 					tail = tmp;
 				}
 				tmp = tmp->s.next;
 			}
 		}
-		/*
-		   sbrk() with a negative argument decrements the program break.
-		   So memory is released by the program to OS.
-		*/
-		sbrk(0 - header->s.size - sizeof(header_t));
-		/* Note: This lock does not really assure thread
-		   safety, because sbrk() itself is not really
-		   thread safe. Suppose there occurs a foregin sbrk(N)
-		   after we find the program break and before we decrement
-		   it, then we end up realeasing the memory obtained by
-		   the foreign sbrk().
-		*/
+
+		// this shrinks the heap by the size of the users data block
+		// and the header, releasing the entire block back to the OS
+		sbrk(0 - sizeof(header_t) - header->s.size);
 		pthread_mutex_unlock(&global_malloc_lock);
 		return;
 	}
@@ -108,43 +113,49 @@ void free(void *block) {
 	pthread_mutex_unlock(&global_malloc_lock);
 }
 
-void *malloc(size_t size)
-{
+void *malloc(size_t size) {
 	size_t total_size;
 	void *block;
 	header_t *header;
-	if (!size)
+	
+	if (!size) {
 		return NULL;
+	}
+	
 	pthread_mutex_lock(&global_malloc_lock);
-	header = get_free_block(size);
+	header = getFreeBlock(size);
 	if (header) {
-		/* Woah, found a free block to accomodate requested memory. */
 		header->s.is_free = 0;
 		pthread_mutex_unlock(&global_malloc_lock);
 		return (void*)(header + 1);
 	}
-	/* We need to get memory to fit in the requested block and header from OS. */
+
 	total_size = sizeof(header_t) + size;
 	block = sbrk(total_size);
 	if (block == (void*) -1) {
 		pthread_mutex_unlock(&global_malloc_lock);
 		return NULL;
 	}
+
 	header = block;
 	header->s.size = size;
 	header->s.is_free = 0;
 	header->s.next = NULL;
-	if (!head)
+
+	if (!head) {
 		head = header;
-	if (tail)
+	}
+	
+	if (tail) {
 		tail->s.next = header;
+	}	
 	tail = header;
+
 	pthread_mutex_unlock(&global_malloc_lock);
 	return (void*)(header + 1);
 }
 
-void *calloc(size_t num, size_t nsize)
-{
+void *calloc(size_t num, size_t nsize) {
 	size_t size;
 	void *block;
 	if (!num || !nsize)
@@ -160,8 +171,7 @@ void *calloc(size_t num, size_t nsize)
 	return block;
 }
 
-void *realloc(void *block, size_t size)
-{
+void *realloc(void *block, size_t size) {
 	header_t *header;
 	void *ret;
 	if (!block || !size)
@@ -177,16 +187,4 @@ void *realloc(void *block, size_t size)
 		free(block);
 	}
 	return ret;
-}
-
-/* A debug function to print the entire link list */
-void print_mem_list()
-{
-	header_t *curr = head;
-	printf("head = %p, tail = %p \n", (void*)head, (void*)tail);
-	while(curr) {
-		printf("addr = %p, size = %zu, is_free=%u, next=%p\n",
-			(void*)curr, curr->s.size, curr->s.is_free, (void*)curr->s.next);
-		curr = curr->s.next;
-	}
 }
